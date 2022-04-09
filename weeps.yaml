@@ -1,0 +1,23 @@
+basics:
+    # problem to test, options include 'mktrap',cyctrap','ftrap','nks1','spin','sat','maxcut','htrap','hxor','hiff'
+    fffff: 'mktrap'
+    # length of problem
+    ell: 50
+    # maximum generation for GA
+    maxgen: 200
+    # required number of consecutive solves to be successful
+    repeat: 10
+    # number of consecutive increases for termination of phase 1 sweeping
+    stop_after: 3
+
+paths:
+    # path for GA binaries to be tested (absolute or relative)
+    GA_bins: ['./DSMGA2']
+    # prefix used for this version of GA
+    version_names: ['Original']
+    # path for output root directory (abs./rel.)
+    root_dir: 'out_dir'
+
+tunnables:
+    # time to wait after an unsuccessful polling
+    sleep_time: 1

@@ -1,0 +1,245 @@
+#!/usr/bin/env python3
+
+import threading
+import time
+import subprocess
+from multiprocessing import cpu_count
+import numpy as np
+from utils import *
+import os
+import logging
+from scheduler import *
+import yaml
+
+with open('weeps.yaml', 'r') as f:
+    configs = yaml.safe_load(f)
+
+REPEAT = configs['basics']['repeat']
+SLEEP_TIME = configs['tunnables']['sleep_time']
+STOP_AFTER = configs['basics']['stop_after']
+MAXGEN = configs['basics']['maxgen']
+ROOT_DIR = configs['paths']['root_dir']
+
+logging.basicConfig(filename='weeps.log', filemode='w', format='[%(levelname)s] %(asctime)s -- %(message)s', datefmt='%H:%M:%S', level=logging.DEBUG)
+
+
+def poll_until_return(sch, jid, postprocess_callback = None):
+    while True:
+        r = sch.inquire(jid)
+        if r:
+            out = postprocess_callback(r) if postprocess_callback else r
+            break
+        else:
+            time.sleep(SLEEP_TIME)
+    return out
+
+
+def weep(problem_id, ell, inst_num, sch, bin_path, out_path):
+    assert type(sch) is Scheduler, 'Sweep is not assigned a proper scheduler'
+    assert problem_id < 3 or inst_num is not None, 'Missing instance number for instance-based problem'
+    bin_dir,bin_name = os.path.split(os.path.abspath(bin_path))
+
+
+    data = {}         # pop : result pairs
+    job_arr = []      # list of (pop,jid) tuples
+
+
+    def trial_population(pop):
+        nonlocal found_min
+
+        result = []
+        for _ in range(REPEAT):
+            jid = sch.queue(f'./{bin_name} {ell} {pop} {problem_id} {MAXGEN} -1 1 0 -1',bin_dir,inst_num)
+            out = poll_until_return(sch, jid, format_DSMGA2_output)
+
+            if out[3]: # fail
+                break
+            else:
+                result.append(out)
+        return result
+
+
+    ### phase 1 : stop after STOP_AFTER consecutive nfe increase or the current nfe reaches 2x the best nfe
+
+    current_pop = 10
+    found_min = False
+
+    while True:
+        best_nfe = np.inf
+
+        result = trial_population(current_pop)
+        
+        if len(result) == 10 or (found_min and len(result)):
+            found_min = True
+            stats = [np.mean(l) for l in list(zip(*result))]
+            data[current_pop] = stats
+            #print(f'{current_pop} successful')
+            
+            if stats[1] < best_nfe:
+                best_nfe = stats[1]
+            elif data[current_pop][1] > 2 * best_nfe:   # break condition 1 : consider solves only
+                break
+
+        '''
+        if data[current_pop][1] > 2 * best_nfe:   # break condition 1 : consider all
+            break
+        '''
+
+        #print(data)
+
+        counter = 0
+        if len(data.keys()) >= STOP_AFTER + 1:
+            nfe_list = []
+            for pop in sorted(data.keys()):
+                nfe_list.append(data[pop][1])
+
+            smoothed_nfe_list = get_moving_avg(nfe_list,STOP_AFTER)
+            for i in range(len(smoothed_nfe_list)-1):
+                if smoothed_nfe_list[i] < smoothed_nfe_list[i+1]:
+                    counter += 1
+                else:
+                    couter = 0
+                if counter == STOP_AFTER:
+                    break
+
+        if counter == STOP_AFTER:
+            break  # break condition 2
+
+        current_pop += 30 # if loop continues
+
+
+    ### phase 2 : select successful pop with lowest nfe and search its neighborhood
+
+    best_pop, best_nfe = None, np.inf
+    for pop in data.keys():
+        if data[pop][1] < best_nfe and not data[pop][3]: # best successful pop
+            best_pop = pop
+            best_nfe = data[pop][1]
+
+
+    def phase2_impl(range_obj):
+        nonlocal best_pop
+        nonlocal best_nfe
+        nonlocal data
+        #nonlocal ell  # ell is not assigned here, so won't be mistakenly created to be a inner local var
+
+        phase2_threads = []
+        phase2_data = {}
+        for phase2_pop in range_obj:
+            if phase2_pop == best_pop: # skip recalculation
+                continue
+            elif phase2_pop <= 0:  # disallow negative population sizes
+                continue
+
+            # create & start threads
+            phase2_thread = threading.Thread(target = lambda dic,pop : dic.update({pop:trial_population(pop)}), args=(phase2_data,phase2_pop))
+            phase2_thread.start()
+            phase2_threads.append(phase2_thread)
+
+        for phase2_thread in phase2_threads: # wait for all threads to finish
+            phase2_thread.join()            
+
+        for phase2_pop in phase2_data.keys():
+            result = phase2_data[phase2_pop]
+
+            if len(result) == 10:
+                stats = [np.mean(l) for l in list(zip(*result))]
+                data[phase2_pop] = stats
+            
+                if stats[1] < best_nfe:
+                    best_nfe = stats[1]
+                    best_pop = phase2_pop
+
+
+    phase2_impl(range(best_pop-25,best_pop+26,5))
+    phase2_impl(range(best_pop-4,best_pop+5,1))
+
+
+    print(f'[{os.path.basename(out_path)}] {inst_num} {best_pop} {best_nfe}')
+    
+    # FIXME : ./DSMGA2 does not currently record revive count, which should also be monitored be dumped into txt
+    if inst_num is not None:
+        with open(os.path.join(out_path,f'{problem_id}_{ell}_{inst_num}.txt'),'w') as f:
+            for pop in sorted(data.keys()):
+                gen,nfe,lsnfe,failnum = data[pop] # failnum is always 0
+                f.write(f'{pop}\t{gen}\t{nfe}\t{lsnfe}\t{failnum}\n')
+
+    return best_pop, data[best_pop][0], data[best_pop][1]
+
+
+def weeps():
+    sch = Scheduler()
+
+    threads_dic = {}
+    results_dic = {}
+
+    prob_name_to_num = {
+        'mktrap':1,  # FIXME: same old problem of getting the exact same output for each run
+        'ftrap':2,
+        'cyctrap':3,
+        'nks1':4,
+        'spin':5,
+        'sat':6,
+        'maxcut':7,
+        'htrap':8,
+        'hxor':9,
+        'hiff':10
+    }
+    
+    for idx, GA_bin in enumerate(configs['paths']['GA_bins']):
+        version_name = configs['paths']['version_names'][idx]
+        threads_dic[version_name] = []
+        results_dic[version_name] = []
+
+        problem_id = prob_name_to_num[configs['basics']['fffff']]
+        ell = configs['basics']['ell']
+        bin_path = GA_bin
+        out_path = os.path.join(ROOT_DIR,version_name)
+        os.makedirs(out_path,exist_ok=True) # create folder if non-existant
+
+        assert os.path.exists(bin_path), f'Binary cannot be located at the provided path "{bin_path}"'
+        assert type(version_name) is str and len(version_name), f'Please provide a valid version name for "{bin_path}"'
+        
+        if configs['basics']['fffff'] == 'mktrap':
+            for _ in range(10):
+                thread = threading.Thread(target = lambda l,tup : l.append(weep(*tup)), args = (results_dic[version_name],(problem_id,ell,None,sch,GA_bin,out_path)) )
+                thread.start()
+                threads_dic[version_name].append(thread)
+
+        elif configs['basics']['fffff'] == 'nks1':
+            for i in range(100):
+                thread = threading.Thread(target = lambda l,tup : l.append(weep(*tup)), args = (results_dic[version_name],(problem_id,ell,i,sch,GA_bin,out_path)) )
+                thread.start()
+                threads_dic[version_name].append(thread)
+
+
+    while len(threads_dic.keys()):  # main scheduler loop
+        global_threads_remain = False
+        for version_name in list(threads_dic.keys())[:]:
+            threads_remain = False
+            for thread in threads_dic[version_name][:]:
+                if not thread.is_alive():
+                    thread.join()
+                    threads_dic[version_name].remove(thread)
+                else:
+                    threads_remain = True
+                    global_threads_remain = True
+
+            if not threads_remain: # sweep for a GA is done
+                threads_dic.pop(version_name)
+                sweep_results = [np.mean(l) for l in zip(*results_dic[version_name])]
+                with open(os.path.join(ROOT_DIR,version_name,f'{problem_id}_{ell}.txt'),'w') as f:
+                    f.write(f'{sweep_results[0]}\t{sweep_results[1]}\t{sweep_results[2]}')
+
+                print(f'[{version_name}] Summary --- Pop: {sweep_results[0]}, Gen: {sweep_results[1]}, NFE: {sweep_results[2]}')
+
+        if global_threads_remain:
+            sch.schedule()
+            time.sleep(1) # sleep for some time
+        else:
+            #sweep_results = [np.mean(l) for l in zip(*results)]
+            break
+
+
+if __name__ == '__main__':
+    weeps()
