@@ -26,7 +26,7 @@ class Scheduler:
 
         job = args
         self.jobs[new_jid] = job
-        logging.info(f'jid={new_jid} : Queued "{args}"')
+        logging.debug(f'jid={new_jid} : Queued "{args}"')
         return new_jid
 
     def inquire(self,jid):
@@ -50,7 +50,7 @@ class Scheduler:
             self.lock.release()
 
             self.jobs.pop(jid)
-            logging.info(f'jid={jid} : Returned 0')
+            logging.debug(f'jid={jid} : Returned 0')
             return job.communicate()[0].decode('utf-8') # decode stdout
         else:  # FIXME : post-mortem, what is left to do?
             #print('sth unexpected')
@@ -76,6 +76,6 @@ class Scheduler:
             self.jobs[jid] = subprocess.Popen(cmd.split(),cwd=cwd,env={"DSMGA2_INSTANCE_NUMBER":str(inst_num)},stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
             self.lock.release()
            
-            logging.info(f'jid={jid} : Scheduled' + f' for thread {inst_num}' if inst_num is not None else '')
+            logging.debug(f'jid={jid} : Scheduled' + f' for thread {inst_num}' if inst_num is not None else '')
             #print(f'Scheduled job for thread {inst_num}')
             pending_jobs.pop(0)

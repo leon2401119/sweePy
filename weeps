@@ -19,144 +19,109 @@ SLEEP_TIME = configs['tunnables']['sleep_time']
 STOP_AFTER = configs['basics']['stop_after']
 MAXGEN = configs['basics']['maxgen']
 ROOT_DIR = configs['paths']['root_dir']
+LOG_LVL = configs['miscs']['log_level'] * 10
 
-logging.basicConfig(filename='weeps.log', filemode='w', format='[%(levelname)s] %(asctime)s -- %(message)s', datefmt='%H:%M:%S', level=logging.DEBUG)
-
-
-def poll_until_return(sch, jid, postprocess_callback = None):
-    while True:
-        r = sch.inquire(jid)
-        if r:
-            out = postprocess_callback(r) if postprocess_callback else r
-            break
-        else:
-            time.sleep(SLEEP_TIME)
-    return out
+logging.basicConfig(filename='weeps.log', filemode='w', format='[%(levelname)s] %(asctime)s -- %(message)s', datefmt='%H:%M:%S', level=LOG_LVL)
 
 
 def weep(problem_id, ell, inst_num, sch, bin_path, out_path):
-    assert type(sch) is Scheduler, 'Sweep is not assigned a proper scheduler'
+    assert type(sch) is Scheduler, 'weep procedure is not assigned a proper scheduler'
     assert problem_id < 3 or inst_num is not None, 'Missing instance number for instance-based problem'
     bin_dir,bin_name = os.path.split(os.path.abspath(bin_path))
 
 
-    data = {}         # pop : result pairs
-    job_arr = []      # list of (pop,jid) tuples
+    data = {}                    # pop,result pairs
+    job_arr = []                 # list of (pop,jid) tuples
+    wLock = threading.Lock()     # lock for critical sections among threads (particularly in phase 2)
 
+    best_nfe = np.inf
+    best_pop = None
+    solved = False
+    
 
-    def trial_population(pop):
-        nonlocal found_min
+    def trial_population(pop): # FIXME : ensure reentrant
+        nonlocal data
+        nonlocal best_nfe
+        nonlocal best_pop
 
-        result = []
+        results = []
         for _ in range(REPEAT):
             jid = sch.queue(f'./{bin_name} {ell} {pop} {problem_id} {MAXGEN} -1 1 0 -1',bin_dir,inst_num)
-            out = poll_until_return(sch, jid, format_DSMGA2_output)
+            out = poll_until_return(sch, jid, format_DSMGA2_output, SLEEP_TIME)
 
             if out[3]: # fail
                 break
             else:
-                result.append(out)
-        return result
+                results.append(out)
 
-
-    ### phase 1 : stop after STOP_AFTER consecutive nfe increase or the current nfe reaches 2x the best nfe
-
-    current_pop = 10
-    found_min = False
-
-    while True:
-        best_nfe = np.inf
-
-        result = trial_population(current_pop)
+        if len(results):
+            data[pop] = [np.mean(l) for l in list(zip(*results))]
         
-        if len(result) == 10 or (found_min and len(result)):
-            found_min = True
-            stats = [np.mean(l) for l in list(zip(*result))]
-            data[current_pop] = stats
-            #print(f'{current_pop} successful')
-            
-            if stats[1] < best_nfe:
-                best_nfe = stats[1]
-            elif data[current_pop][1] > 2 * best_nfe:   # break condition 1 : consider solves only
+        # CRITICAL : possible race condition
+        wLock.acquire()
+        if len(results) == 10 and data[pop][1] < best_nfe:
+            best_nfe = data[pop][1]
+            best_pop = pop
+        wLock.release()
+
+        return len(results) == 10
+
+    
+    ### phase 1 : stop after STOP_AFTER consecutive nfe increase or the current nfe reaches 2x the best nfe
+    def phase1_impl(init_pop):
+        nonlocal solved
+
+        current_pop = init_pop
+        while True:
+            s = trial_population(current_pop)
+            solved = solved or s
+       
+            ''' break condition 1 : consider solves only '''
+            if s and data[current_pop][1] > 2 * best_nfe:
                 break
 
-        '''
-        if data[current_pop][1] > 2 * best_nfe:   # break condition 1 : consider all
-            break
-        '''
+            ''' break condition 1 : consider all '''
+            #if data[current_pop][1] > 2 * best_nfe:
+            #    break
 
-        #print(data)
+            ''' check moving average '''
+            if s and K_incr_in_mv_avg(data,STOP_AFTER):
+                break
 
-        counter = 0
-        if len(data.keys()) >= STOP_AFTER + 1:
-            nfe_list = []
-            for pop in sorted(data.keys()):
-                nfe_list.append(data[pop][1])
-
-            smoothed_nfe_list = get_moving_avg(nfe_list,STOP_AFTER)
-            for i in range(len(smoothed_nfe_list)-1):
-                if smoothed_nfe_list[i] < smoothed_nfe_list[i+1]:
-                    counter += 1
-                else:
-                    couter = 0
-                if counter == STOP_AFTER:
-                    break
-
-        if counter == STOP_AFTER:
-            break  # break condition 2
-
-        current_pop += 30 # if loop continues
+            current_pop += 30 # if loop continues
 
 
     ### phase 2 : select successful pop with lowest nfe and search its neighborhood
-
-    best_pop, best_nfe = None, np.inf
-    for pop in data.keys():
-        if data[pop][1] < best_nfe and not data[pop][3]: # best successful pop
-            best_pop = pop
-            best_nfe = data[pop][1]
-
-
     def phase2_impl(range_obj):
-        nonlocal best_pop
-        nonlocal best_nfe
-        nonlocal data
-        #nonlocal ell  # ell is not assigned here, so won't be mistakenly created to be a inner local var
 
-        phase2_threads = []
-        phase2_data = {}
-        for phase2_pop in range_obj:
-            if phase2_pop == best_pop: # skip recalculation
+        threads = []
+        for pop in range_obj:
+            if pop == best_pop: # skip recalculation
                 continue
-            elif phase2_pop <= 0:  # disallow negative population sizes
+            elif pop <= 0:  # disallow negative population sizes
                 continue
 
             # create & start threads
-            phase2_thread = threading.Thread(target = lambda dic,pop : dic.update({pop:trial_population(pop)}), args=(phase2_data,phase2_pop))
-            phase2_thread.start()
-            phase2_threads.append(phase2_thread)
+            thread = threading.Thread(target = trial_population, args=(pop,))
+            thread.start()
+            threads.append(thread)
 
-        for phase2_thread in phase2_threads: # wait for all threads to finish
-            phase2_thread.join()            
-
-        for phase2_pop in phase2_data.keys():
-            result = phase2_data[phase2_pop]
-
-            if len(result) == 10:
-                stats = [np.mean(l) for l in list(zip(*result))]
-                data[phase2_pop] = stats
-            
-                if stats[1] < best_nfe:
-                    best_nfe = stats[1]
-                    best_pop = phase2_pop
+        for thread in threads: # wait for all threads to finish
+            thread.join()
 
 
+    phase1_impl(10)
     phase2_impl(range(best_pop-25,best_pop+26,5))
     phase2_impl(range(best_pop-4,best_pop+5,1))
 
 
-    print(f'[{os.path.basename(out_path)}] {inst_num} {best_pop} {best_nfe}')
-    
+    ### done : print and write out the results
+
+    if inst_num is not None:
+        print(f'[{os.path.basename(out_path)}] {inst_num} {best_pop} {best_nfe}')
+    else:
+        print(f'[{os.path.basename(out_path)}] {best_pop} {best_nfe}')
+
     # FIXME : ./DSMGA2 does not currently record revive count, which should also be monitored be dumped into txt
     if inst_num is not None:
         with open(os.path.join(out_path,f'{problem_id}_{ell}_{inst_num}.txt'),'w') as f:
@@ -174,7 +139,7 @@ def weeps():
     results_dic = {}
 
     prob_name_to_num = {
-        'mktrap':1,  # FIXME: same old problem of getting the exact same output for each run
+        'mktrap':1,
         'ftrap':2,
         'cyctrap':3,
         'nks1':4,
@@ -205,12 +170,14 @@ def weeps():
                 thread = threading.Thread(target = lambda l,tup : l.append(weep(*tup)), args = (results_dic[version_name],(problem_id,ell,None,sch,GA_bin,out_path)) )
                 thread.start()
                 threads_dic[version_name].append(thread)
+            print(f'[{version_name}] Starting MK-{ell}')
 
         elif configs['basics']['fffff'] == 'nks1':
             for i in range(100):
                 thread = threading.Thread(target = lambda l,tup : l.append(weep(*tup)), args = (results_dic[version_name],(problem_id,ell,i,sch,GA_bin,out_path)) )
                 thread.start()
                 threads_dic[version_name].append(thread)
+            print(f'[{version_name}] Starting NKs1-{ell}')
 
 
     while len(threads_dic.keys()):  # main scheduler loop
@@ -237,7 +204,6 @@ def weeps():
             sch.schedule()
             time.sleep(1) # sleep for some time
         else:
-            #sweep_results = [np.mean(l) for l in zip(*results)]
             break
 
 

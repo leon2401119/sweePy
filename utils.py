@@ -1,4 +1,16 @@
 import numpy as np
+import time
+
+def poll_until_return(sch, jid, postprocess_callback = None, sleep_time = 0):
+    while True:
+        r = sch.inquire(jid)
+        if r:
+            out = postprocess_callback(r) if postprocess_callback else r
+            break
+        else:
+            time.sleep(sleep_time)
+    return out
+
 
 def get_moving_avg(data,k):
     assert k%2, 'k must be odd for centered moving average'
@@ -25,6 +37,25 @@ def get_moving_avg(data,k):
         newdata.append(sum(window)/len(window))
 
     return newdata
+
+
+def K_incr_in_mv_avg(data,K): # check if there are K consecutive increases in moving average extracted from data
+    counter = 0
+    if len(data.keys()) >= K + 1:
+        nfe_list = []
+        for pop in sorted(data.keys()):
+            nfe_list.append(data[pop][1])
+
+        smoothed_nfe_list = get_moving_avg(nfe_list,K)
+        for i in range(len(smoothed_nfe_list)-1):
+            if smoothed_nfe_list[i] < smoothed_nfe_list[i+1]:
+                counter += 1
+            else:
+                couter = 0
+            if counter == K:
+                return True
+
+    return False
 
 
 def format_DSMGA2_output(result_str):

@@ -5,6 +5,8 @@ basics:
     ell: 50
     # maximum generation for GA
     maxgen: 200
+    # maximum nfe for GA
+    maxnfe: -1
     # required number of consecutive solves to be successful
     repeat: 10
     # number of consecutive increases for termination of phase 1 sweeping
@@ -12,7 +14,7 @@ basics:
 
 paths:
     # path for GA binaries to be tested (absolute or relative)
-    GA_bins: ['./DSMGA2']
+    GA_bins: ['../backup_code/DSMGA-II-TwoEdge/DSMGA2']
     # prefix used for this version of GA
     version_names: ['Original']
     # path for output root directory (abs./rel.)
@@ -21,3 +23,39 @@ paths:
 tunnables:
     # time to wait after an unsuccessful polling
     sleep_time: 1
+
+miscs:
+    # filter for logging (1=debug,2=info,3=warning,4=error,5=critical)
+    log_level: 3
+
+
+
+
+
+
+#### GA specs ####
+GAs:
+  - name: 'Original'
+    path: '/home/yangck/backup_code/DSMGA-II-TwoEdge'
+    bin: 'DSMGA2'
+    fffff_to_problemid: &DSMGA2-DEFAULT-MAPPING
+        mktrap  :  1
+        ftrap   :  2
+        cyctrap :  3
+        nks1    :  4
+        spin    :  5
+        sat     :  6
+    fixed_fields:
+        repeat    :  1
+        display   : -1
+        rand_seed : -1
+    envs:
+        'DSMGA2_inst_number': inst_num
+
+  - name: 'MODDED1'
+    path: '/path/to/src/dir'
+    bin: 'DSMGA2'
+    fffff_to_problemid:
+        <<: *DSMGA2-DEFAULT-MAPPING
+        extra1  :  7
+        extra2  :  8
