@@ -65,7 +65,7 @@ class Scheduler:
         if not len(pending_jobs):
             return
 
-        pending_jobs.sort(key=lambda e:e[2] if type(e[2]) is int else np.inf) # sort by inst number
+        pending_jobs.sort(key=lambda e:e[3] if type(e[3]) is int else np.inf) # sort by inst number
         while len(pending_jobs): # schedule one-by-one until workers are fed (or out of jobs)
             if self.running == self.num_workers:
                 break
