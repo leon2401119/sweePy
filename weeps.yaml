@@ -1,32 +1,35 @@
 basics:
-    # problem to test, options include 'mktrap',cyctrap','ftrap','nks1','spin','sat','maxcut','htrap','hxor','hiff'
-    fffff: 'mktrap'
+    # problem to test, full options are listed in the 'Fspecs' section below
+    fffff: mktrap
     # length of problem
-    ell: 50
+    ell: 400
     # maximum generation for GA
     maxgen: 200
     # maximum nfe for GA
     maxnfe: -1
+    # instance number for instance based problem, blank for full test
+    instance: 
+    # shift amount for nk, 1 if unspecified
+    shift:
+
+GAs:
+  - Original
+
+paths:
+    # path for output root directory (abs./rel.)
+    root_dir: out_dir
+
+tunnables:
     # required number of consecutive solves to be successful
     repeat: 10
     # number of consecutive increases for termination of phase 1 sweeping
     stop_after: 3
-
-paths:
-    # path for GA binaries to be tested (absolute or relative)
-    GA_bins: ['../backup_code/DSMGA-II-TwoEdge/DSMGA2']
-    # prefix used for this version of GA
-    version_names: ['Original']
-    # path for output root directory (abs./rel.)
-    root_dir: 'out_dir'
-
-tunnables:
     # time to wait after an unsuccessful polling
     sleep_time: 1
 
 miscs:
     # filter for logging (1=debug,2=info,3=warning,4=error,5=critical)
-    log_level: 3
+    log_level: 2
 
 
 
@@ -34,28 +37,66 @@ miscs:
 
 
 #### GA specs ####
-GAs:
-  - name: 'Original'
-    path: '/home/yangck/backup_code/DSMGA-II-TwoEdge'
-    bin: 'DSMGA2'
-    fffff_to_problemid: &DSMGA2-DEFAULT-MAPPING
-        mktrap  :  1
-        ftrap   :  2
-        cyctrap :  3
-        nks1    :  4
-        spin    :  5
-        sat     :  6
-    fixed_fields:
-        repeat    :  1
-        display   : -1
-        rand_seed : -1
-    envs:
-        'DSMGA2_inst_number': inst_num
 
-  - name: 'MODDED1'
+##########################################################################
+# IMPORTANT : the keywords 'pop', 'instance', 'shift' is reserved for    #
+#             population size, instance number, shift (all non-optinal)  #
+#             and MUST be contained in all GA specifications.            #
+##########################################################################
+
+GAspecs:
+  Original: &DSMGA2-DEFAULT-SPEC
+    path: '../backup_code/DSMGA-II-TwoEdge'
+    bin: DSMGA2
+    io: &DSMGA2-DEFAULT-IO  # declare placeholders
+      argv: 'ell pop problem_id maxgen maxnfe repeat display rand_seed'
+      stdout: "\ngen  nfe  lsnfe failnum"
+      fixed_fields:
+        repeat    :  1
+        display   :  0
+        rand_seed : -1
+      mappings:
+      - from: fffff
+        to: problem_id
+        map: &DSMGA2-DEFAULT-FFFFF-MAPPING
+          mktrap  :  1
+          ftrap   :  2
+          cyctrap :  3
+          nk      :  4
+          spin    :  5
+          sat     :  6
+      envs: &DSMGA2-DEFAULT-ENVS
+        DSMGA2_INSTANCE_NUMBER: instance
+        DSMGA2_SHIFT: shift
+
+  Mod1:
     path: '/path/to/src/dir'
-    bin: 'DSMGA2'
-    fffff_to_problemid:
-        <<: *DSMGA2-DEFAULT-MAPPING
-        extra1  :  7
-        extra2  :  8
+    bin: DSMGA2
+    io:
+      <<: *DSMGA2-DEFAULT-IO
+      mappings:
+      - from: fffff
+        to: problem_id
+        map:
+          <<: *DSMGA2-DEFAULT-FFFFF-MAPPING
+          extra1  :  7
+          extra2  :  8
+
+
+#### f specs ####
+Fspecs:
+    mktrap:
+        feasible_ell: "lambda ell: True if not ell%5 else False"
+    cyctrap:
+        feasible_ell: "lambda ell: True if not ell%4 else False"
+    ftrap:
+        feasible_ell: "lambda ell: True if not ell%6 else False"
+    nk:
+        feasible_ell: "lambda ell: True if ell in [100,200,400] else False"
+        instances: "range(100)"
+    spin:
+        feasible_ell: "lambda ell: True if ell in [100,196,400,784] else False"
+        instances: "range(1,100+1,1)"
+    sat:
+        feasible_ell: "lambda ell: True if ell in [20,50,100] else False"
+        instances: "range(1,1000+1,1)"

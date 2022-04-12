@@ -61,19 +61,19 @@ class Scheduler:
         if self.running == self.num_workers:
             return
 
-        pending_jobs = [(jid,self.jobs[jid][0],self.jobs[jid][1],self.jobs[jid][2]) for jid in list(self.jobs.keys()) if type(self.jobs[jid]) is tuple]
+        pending_jobs = [(jid,self.jobs[jid][0],self.jobs[jid][1],self.jobs[jid][2],self.jobs[jid][3]) for jid in list(self.jobs.keys()) if type(self.jobs[jid]) is tuple]
         if not len(pending_jobs):
             return
 
-        pending_jobs.sort(key=lambda e:e[3] if type(e[3]) is int else np.inf) # sort by inst number
+        pending_jobs.sort(key=lambda e:e[1] if type(e[1]) is int else np.inf) # sort by inst number
         while len(pending_jobs): # schedule one-by-one until workers are fed (or out of jobs)
             if self.running == self.num_workers:
                 break
 
             self.lock.acquire()
             self.running += 1
-            jid, cmd, cwd, inst_num = pending_jobs[0]
-            self.jobs[jid] = subprocess.Popen(cmd.split(),cwd=cwd,env={"DSMGA2_INSTANCE_NUMBER":str(inst_num)},stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
+            jid, inst_num, cmd, cwd, env = pending_jobs[0]
+            self.jobs[jid] = subprocess.Popen(cmd.split(),cwd=cwd,env=env,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
             self.lock.release()
            
             logging.debug(f'jid={jid} : Scheduled' + f' for thread {inst_num}' if inst_num is not None else '')

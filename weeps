@@ -10,25 +10,94 @@ import os
 import logging
 from scheduler import *
 import yaml
+import copy
 
 with open('weeps.yaml', 'r') as f:
     configs = yaml.safe_load(f)
 
-REPEAT = configs['basics']['repeat']
+REPEAT = configs['tunnables']['repeat']
 SLEEP_TIME = configs['tunnables']['sleep_time']
-STOP_AFTER = configs['basics']['stop_after']
-MAXGEN = configs['basics']['maxgen']
+STOP_AFTER = configs['tunnables']['stop_after']
 ROOT_DIR = configs['paths']['root_dir']
 LOG_LVL = configs['miscs']['log_level'] * 10
 
 logging.basicConfig(filename='weeps.log', filemode='w', format='[%(levelname)s] %(asctime)s -- %(message)s', datefmt='%H:%M:%S', level=LOG_LVL)
 
 
-def weep(problem_id, ell, inst_num, sch, bin_path, out_path):
-    assert type(sch) is Scheduler, 'weep procedure is not assigned a proper scheduler'
-    assert problem_id < 3 or inst_num is not None, 'Missing instance number for instance-based problem'
-    bin_dir,bin_name = os.path.split(os.path.abspath(bin_path))
+def prefill_cmd(GAname,**kwargs):
+    GA_spec = configs['GAspecs'][GAname]
 
+    raw_cmd = f'./{GA_spec["bin"]} {GA_spec["io"]["argv"]}'
+
+    # TODO : prefill kwargs
+    for key, val in kwargs.items():
+        raw_cmd = raw_cmd.replace(key, str(val))
+
+    # prefill mappings
+    for mapping in GA_spec['io']['mappings']:
+        src = mapping['to']
+        
+        if src not in raw_cmd:
+            logging.warning(f'Cannot find "{src}" for mapping for {GAname}s cmdline')
+            continue
+            
+        try:
+            target = str(mapping['map'][configs['basics'][mapping['from']]])
+        except Exception as e:
+            logging.error(f'Found "{src}" to replace with "{target}", but the value of "{target}" is not specified in the basics secion')
+            exit()
+
+        raw_cmd = raw_cmd.replace(src,target)
+
+    # prefill basics : if conflict between basics and fixed fields, prioritize basics
+    for src, target in configs['basics'].items():
+        try:
+            raw_cmd = raw_cmd.replace(src,str(target),1) # replace the first occurence, FIXME: problematic?
+        except Exception as e:
+            logging.warning(f'Cannot find "{src}" to substitute to "{target}" for {GAname}s cmdline')
+
+    # prefill fixed fields
+    for src, target in GA_spec['io']['fixed_fields'].items():
+        try:
+            raw_cmd = raw_cmd.replace(src,str(target),1) # replace the first occurence, FIXME: problematic?
+        except Exception as e:
+            logging.warning(f'Cannot find "{src}" to substitute to "{target}" for {GAname}s cmdline')
+    
+    return raw_cmd
+
+
+def prefill_env(GAname,**kwargs):
+    GA_spec = configs['GAspecs'][GAname]
+
+    raw_env = copy.deepcopy(GA_spec['io']['envs']) # pitfall: shallow copy modifies the contents of configs
+
+    for key, val in raw_env.items():
+        # prefill kwargs
+        if val in kwargs.keys():
+            raw_env[key] = str(kwargs[val])
+
+    return raw_env
+
+
+def finalize_cmd(cmd, pop):
+    if 'pop' not in cmd:
+        logging.error(f'Cannot substitute pop for "{cmd}"')
+        exit()
+
+    return cmd.replace('pop',str(pop))
+
+
+def weep(fffff, ell, inst_num, sch, GAname):
+    assert type(sch) is Scheduler, 'weep procedure is not assigned a proper scheduler'
+
+    raw_cmd = prefill_cmd(GAname, instance = inst_num)  # will need to fill in popsize later
+    cwd = configs['GAspecs'][GAname]['path']
+    env = prefill_env(GAname, instance = inst_num)
+
+    for mapping in configs['GAspecs'][GAname]['io']['mappings']:
+        if mapping['from'] == 'fffff':
+            dict_fffff_to_problemid = mapping['map']
+    problem_id = dict_fffff_to_problemid[fffff]
 
     data = {}                    # pop,result pairs
     job_arr = []                 # list of (pop,jid) tuples
@@ -37,7 +106,7 @@ def weep(problem_id, ell, inst_num, sch, bin_path, out_path):
     best_nfe = np.inf
     best_pop = None
     solved = False
-    
+
 
     def trial_population(pop): # FIXME : ensure reentrant
         nonlocal data
@@ -46,7 +115,8 @@ def weep(problem_id, ell, inst_num, sch, bin_path, out_path):
 
         results = []
         for _ in range(REPEAT):
-            jid = sch.queue(f'./{bin_name} {ell} {pop} {problem_id} {MAXGEN} -1 1 0 -1',bin_dir,inst_num)
+            cmd = finalize_cmd(raw_cmd,pop)
+            jid = sch.queue(inst_num, cmd, cwd, env)
             out = poll_until_return(sch, jid, format_DSMGA2_output, SLEEP_TIME)
 
             if out[3]: # fail
@@ -64,6 +134,12 @@ def weep(problem_id, ell, inst_num, sch, bin_path, out_path):
             best_pop = pop
         wLock.release()
 
+
+        if len(results) < 10:
+            logging.warning(f'{GAname} inst={inst_num} pop={pop} failed on attempt {len(results)}')
+        else:
+            logging.info(f'{GAname} inst={inst_num} pop={pop} successful')
+
         return len(results) == 10
 
     
@@ -72,6 +148,8 @@ def weep(problem_id, ell, inst_num, sch, bin_path, out_path):
         nonlocal solved
 
         current_pop = init_pop
+
+        # TODO : first STOP_AFTER trials can be executed parallely to further decr turnaround time
         while True:
             s = trial_population(current_pop)
             solved = solved or s
@@ -117,14 +195,14 @@ def weep(problem_id, ell, inst_num, sch, bin_path, out_path):
 
     ### done : print and write out the results
 
-    if inst_num is not None:
-        print(f'[{os.path.basename(out_path)}] {inst_num} {best_pop} {best_nfe}')
+    if inst_num < 0:
+        print(f'[{GAname}] {best_pop} {best_nfe}')
     else:
-        print(f'[{os.path.basename(out_path)}] {best_pop} {best_nfe}')
+        print(f'[{GAname}] {inst_num} {best_pop} {best_nfe}')
 
     # FIXME : ./DSMGA2 does not currently record revive count, which should also be monitored be dumped into txt
     if inst_num is not None:
-        with open(os.path.join(out_path,f'{problem_id}_{ell}_{inst_num}.txt'),'w') as f:
+        with open(os.path.join(ROOT_DIR,GAname,f'{problem_id}_{ell}_{inst_num}.txt'),'w') as f:
             for pop in sorted(data.keys()):
                 gen,nfe,lsnfe,failnum = data[pop] # failnum is always 0
                 f.write(f'{pop}\t{gen}\t{nfe}\t{lsnfe}\t{failnum}\n')
@@ -138,67 +216,79 @@ def weeps():
     threads_dic = {}
     results_dic = {}
 
-    prob_name_to_num = {
-        'mktrap':1,
-        'ftrap':2,
-        'cyctrap':3,
-        'nks1':4,
-        'spin':5,
-        'sat':6,
-        'maxcut':7,
-        'htrap':8,
-        'hxor':9,
-        'hiff':10
-    }
-    
-    for idx, GA_bin in enumerate(configs['paths']['GA_bins']):
-        version_name = configs['paths']['version_names'][idx]
-        threads_dic[version_name] = []
-        results_dic[version_name] = []
+    fffff = configs['basics']['fffff']
+    ell = configs['basics']['ell']
 
-        problem_id = prob_name_to_num[configs['basics']['fffff']]
-        ell = configs['basics']['ell']
-        bin_path = GA_bin
-        out_path = os.path.join(ROOT_DIR,version_name)
+    for GAname in configs['GAs']:
+        # retrieve metadata for GA
+        try:
+            GAspec = configs['GAspecs'][GAname]
+        except Exception as e:
+            print(f'No corresponding configuration for GA named {GAname} in the yaml GAspecs')
+            exit()
+
+        # validty check
+        bin_path = os.path.join(GAspec['path'], GAspec['bin'])
+        out_path = os.path.join(ROOT_DIR, GAname)
         os.makedirs(out_path,exist_ok=True) # create folder if non-existant
 
         assert os.path.exists(bin_path), f'Binary cannot be located at the provided path "{bin_path}"'
-        assert type(version_name) is str and len(version_name), f'Please provide a valid version name for "{bin_path}"'
         
-        if configs['basics']['fffff'] == 'mktrap':
-            for _ in range(10):
-                thread = threading.Thread(target = lambda l,tup : l.append(weep(*tup)), args = (results_dic[version_name],(problem_id,ell,None,sch,GA_bin,out_path)) )
-                thread.start()
-                threads_dic[version_name].append(thread)
-            print(f'[{version_name}] Starting MK-{ell}')
+        if fffff not in configs['Fspecs'].keys():
+            print(f'No corresponding configuration for problem named {fffff} in the yaml Fspecs')
+            exit()
+        
+        if 'feasible_ell' in configs['Fspecs'][fffff].keys():
+            ell_feasibility_check_func = eval(configs['Fspecs'][fffff]['feasible_ell'])
+            if not ell_feasibility_check_func(ell):
+                print(f'Infeasible ell for {fffff}')
+                exit()
+        else:
+            logging.warning(f'No ell feasibility checking provided for {fffff}, skipping...')
 
-        elif configs['basics']['fffff'] == 'nks1':
-            for i in range(100):
-                thread = threading.Thread(target = lambda l,tup : l.append(weep(*tup)), args = (results_dic[version_name],(problem_id,ell,i,sch,GA_bin,out_path)) )
-                thread.start()
-                threads_dic[version_name].append(thread)
-            print(f'[{version_name}] Starting NKs1-{ell}')
+        if 'instances' in configs['Fspecs'][fffff].keys():
+            taskiter = eval(configs['Fspecs'][fffff]['instances'])
+            hasInstance = True
+        else:
+            taskiter = range(10)
+            hasInstance = False
+       
+        # schedule all tasks with multithreading
+        threads_dic[GAname] = []
+        results_dic[GAname] = []
+        
+        for i in taskiter:
+            thread = threading.Thread(target = lambda l,tup : l.append(weep(*tup)), args = (results_dic[GAname],(fffff,ell,i if hasInstance else -1*i-1,sch,GAname)) )
+            thread.start()
+            threads_dic[GAname].append(thread)
+        print(f'[{GAname}] Starting {fffff} ({ell})')
 
 
     while len(threads_dic.keys()):  # main scheduler loop
         global_threads_remain = False
-        for version_name in list(threads_dic.keys())[:]:
+        for GAname in list(threads_dic.keys())[:]:
             threads_remain = False
-            for thread in threads_dic[version_name][:]:
+            for thread in threads_dic[GAname][:]:
                 if not thread.is_alive():
                     thread.join()
-                    threads_dic[version_name].remove(thread)
+                    threads_dic[GAname].remove(thread)
                 else:
                     threads_remain = True
                     global_threads_remain = True
 
             if not threads_remain: # sweep for a GA is done
-                threads_dic.pop(version_name)
-                sweep_results = [np.mean(l) for l in zip(*results_dic[version_name])]
-                with open(os.path.join(ROOT_DIR,version_name,f'{problem_id}_{ell}.txt'),'w') as f:
+                threads_dic.pop(GAname)
+                sweep_results = [np.mean(l) for l in zip(*results_dic[GAname])]
+                
+                for mapping in configs['GAspecs'][GAname]['io']['mappings']:
+                    if mapping['from'] == 'fffff':
+                        dict_fffff_to_problemid = mapping['map']
+                problem_id = dict_fffff_to_problemid[fffff]
+
+                with open(os.path.join(ROOT_DIR,GAname,f'{problem_id}_{ell}.txt'),'w') as f:
                     f.write(f'{sweep_results[0]}\t{sweep_results[1]}\t{sweep_results[2]}')
 
-                print(f'[{version_name}] Summary --- Pop: {sweep_results[0]}, Gen: {sweep_results[1]}, NFE: {sweep_results[2]}')
+                print(f'[{GAname}] Summary --- Pop: {sweep_results[0]}, Gen: {sweep_results[1]}, NFE: {sweep_results[2]}')
 
         if global_threads_remain:
             sch.schedule()
