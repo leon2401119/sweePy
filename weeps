@@ -278,17 +278,17 @@ def weeps():
 
             if not threads_remain: # sweep for a GA is done
                 threads_dic.pop(GAname)
-                sweep_results = [np.mean(l) for l in zip(*results_dic[GAname])]
-                
+                sweep_results = [(np.mean(l),np.std(l)) for l in zip(*results_dic[GAname])]
+
                 for mapping in configs['GAspecs'][GAname]['io']['mappings']:
                     if mapping['from'] == 'fffff':
                         dict_fffff_to_problemid = mapping['map']
                 problem_id = dict_fffff_to_problemid[fffff]
 
                 with open(os.path.join(ROOT_DIR,GAname,f'{problem_id}_{ell}.txt'),'w') as f:
-                    f.write(f'{sweep_results[0]}\t{sweep_results[1]}\t{sweep_results[2]}')
+                    f.write(f'{sweep_results[0][0]}\t{sweep_results[1][0]}\t{sweep_results[2][0]}\t{sweep_results[2][1]}')
 
-                print(f'[{GAname}] Summary --- Pop: {sweep_results[0]}, Gen: {sweep_results[1]}, NFE: {sweep_results[2]}')
+                print(f'[{GAname}] Summary --- Pop: {sweep_results[0][0]}, Gen: {sweep_results[1][0]}, NFE: {sweep_results[2]}')
 
         if global_threads_remain:
             sch.schedule()
