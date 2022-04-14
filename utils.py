@@ -1,17 +1,6 @@
 import numpy as np
 import time
 
-def poll_until_return(sch, jid, postprocess_callback = None, sleep_time = 0):
-    while True:
-        r = sch.inquire(jid)
-        if r:
-            out = postprocess_callback(r) if postprocess_callback else r
-            break
-        else:
-            time.sleep(sleep_time)
-    return out
-
-
 def get_moving_avg(data,k):
     assert k%2, 'k must be odd for centered moving average'
     assert k<len(data)

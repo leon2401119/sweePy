@@ -29,7 +29,6 @@ def prefill_cmd(GAname,**kwargs):
 
     raw_cmd = f'./{GA_spec["bin"]} {GA_spec["io"]["argv"]}'
 
-    # TODO : prefill kwargs
     for key, val in kwargs.items():
         raw_cmd = raw_cmd.replace(key, str(val))
 
@@ -108,7 +107,7 @@ def weep(fffff, ell, inst_num, sch, GAname):
     solved = False
 
 
-    def trial_population(pop): # FIXME : ensure reentrant
+    def trial_population(pop): # FIXME : ensure thread-safety
         nonlocal data
         nonlocal best_nfe
         nonlocal best_pop
@@ -117,8 +116,9 @@ def weep(fffff, ell, inst_num, sch, GAname):
         for _ in range(REPEAT):
             cmd = finalize_cmd(raw_cmd,pop)
             jid = sch.queue(inst_num, cmd, cwd, env)
-            out = poll_until_return(sch, jid, format_DSMGA2_output, SLEEP_TIME)
+            out = sch.join(jid, format_DSMGA2_output)
 
+            # FIXME: failed GA run should be included into results as well
             if out[3]: # fail
                 break
             else:
@@ -292,7 +292,7 @@ def weeps():
 
         if global_threads_remain:
             sch.schedule()
-            time.sleep(1) # sleep for some time
+            #time.sleep(1) # sleep for some time
         else:
             break
 

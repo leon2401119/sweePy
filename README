@@ -1,0 +1,4 @@
+### TODO
+1. optinal args for GA spec specified with '[' and ']'
+2. support for multiple problems at once
+3. dynamic profiling (jobs scheduled per sec, job avg wait time, job avg exec time, ...etc)
