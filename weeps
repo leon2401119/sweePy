@@ -32,6 +32,9 @@ def prefill_cmd(GAname,**kwargs):
     for key, val in kwargs.items():
         raw_cmd = raw_cmd.replace(key, str(val))
 
+
+    # FIXME : use regex to seperate tokens first instead of str.replace which is problematic for short tokens
+    
     # prefill mappings
     for mapping in GA_spec['io']['mappings']:
         src = mapping['to']
