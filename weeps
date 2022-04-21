@@ -6,11 +6,12 @@ import subprocess
 from multiprocessing import cpu_count
 import numpy as np
 from utils import *
-import os
+import os, signal
 import logging
 from scheduler import *
 import yaml
 import copy
+import re
 
 with open('weeps.yaml', 'r') as f:
     configs = yaml.safe_load(f)
@@ -27,45 +28,81 @@ logging.basicConfig(filename='weeps.log', filemode='w', format='[%(levelname)s] 
 def prefill_cmd(GAname,**kwargs):
     GA_spec = configs['GAspecs'][GAname]
 
-    raw_cmd = f'./{GA_spec["bin"]} {GA_spec["io"]["argv"]}'
+    argv = GA_spec["io"]["argv"]
+    tokens = re.findall('\w+|\[\w+\]|.',argv)
 
-    for key, val in kwargs.items():
-        raw_cmd = raw_cmd.replace(key, str(val))
-
-
-    # FIXME : use regex to seperate tokens first instead of str.replace which is problematic for short tokens
-    
-    # prefill mappings
-    for mapping in GA_spec['io']['mappings']:
-        src = mapping['to']
-        
-        if src not in raw_cmd:
-            logging.warning(f'Cannot find "{src}" for mapping for {GAname}s cmdline')
+    for idx, token in enumerate(tokens):
+        if token == 'pop':               # reserved
             continue
-            
+
+        if re.match('\w+',token):        # required arg
+            required = True
+        elif re.match('\[\w+\]',token):  # optional arg
+            token = token[1:-1]          # strip the [ and ]
+            required = False
+        else:                            # any other things, generally including seperators like spaces or tabs
+            continue
+
+        ## Sequentially search for value replacement, priority from H to L is kwargs -> mappings -> basics -> fixed fields
+
+        # 1. prefill kwarg
         try:
-            target = str(mapping['map'][configs['basics'][mapping['from']]])
+            target = kwargs[token]
+            tokens[idx] = str(target)
+            logging.info(f'{GAname} argv substitution : "{token}" -> "{target}"  (kwargs)')
+            continue
         except Exception as e:
-            logging.error(f'Found "{src}" to replace with "{target}", but the value of "{target}" is not specified in the basics secion')
+            logging.debug(f'No match for "{token}" in kwargs')
+
+        # 2. prefill mapping
+        mapped = False
+        for mapping in GA_spec['io']['mappings']:
+            src = mapping['to']
+            if src == token:
+                try:
+                    target = configs['basics'][mapping['from']]
+                    tokens[idx] = str(mapping['map'][target])
+                    logging.info(f'{GAname} argv substitution : "{token}" -> "{target}"  (mappings)')
+                    mapped = True
+                    break
+                except Exception as e:
+                    logging.error(f'Found "{src}" to replace with "{target}", but the value of "{target}" is not specified in the basics secion')
+                    exit()
+
+        if mapped:
+            continue
+        else:
+            logging.debug(f'No match for "{token}" in mappings')
+
+        # 3. prefill basics
+        try:
+            target = configs['basics'][token]
+            tokens[idx] = str(target)
+            logging.info(f'{GAname} argv substitution : "{token}" -> "{target}"  (basics)')
+            continue
+        except Exception as e:
+            logging.debug(f'No match for "{token}" in basics')
+
+        # 4. prefill fixed fileds
+        try:
+            target = GA_spec['io']['fixed_fields'][token]
+            tokens[idx] = str(target)
+            logging.info(f'{GAname} argv substitution : "{token}" -> "{target}"  (fixed fields)')
+            continue
+        except Exception as e:
+            logging.debug(f'No match for "{token}" in fixed fields')
+
+        
+        if required:  # token is a required arg and no match was found
+            logging.error(f'No match for "{token}", which is required in the argv of {GAname}')
             exit()
 
-        raw_cmd = raw_cmd.replace(src,target)
+        else:         # token is an optional keyword and is not specified anywhere
+            logging.warning(f'No match for "{token}", since it is optional it will be discarded from argv')
+            tokens[idx] = ''   # clear it here
+   
 
-    # prefill basics : if conflict between basics and fixed fields, prioritize basics
-    for src, target in configs['basics'].items():
-        try:
-            raw_cmd = raw_cmd.replace(src,str(target),1) # replace the first occurence, FIXME: problematic?
-        except Exception as e:
-            logging.warning(f'Cannot find "{src}" to substitute to "{target}" for {GAname}s cmdline')
-
-    # prefill fixed fields
-    for src, target in GA_spec['io']['fixed_fields'].items():
-        try:
-            raw_cmd = raw_cmd.replace(src,str(target),1) # replace the first occurence, FIXME: problematic?
-        except Exception as e:
-            logging.warning(f'Cannot find "{src}" to substitute to "{target}" for {GAname}s cmdline')
-    
-    return raw_cmd
+    return f'./{GA_spec["bin"]} {"".join(tokens)}'
 
 
 def prefill_env(GAname,**kwargs):
@@ -282,6 +319,9 @@ def weeps():
             if not threads_remain: # sweep for a GA is done
                 threads_dic.pop(GAname)
                 sweep_results = [(np.mean(l),np.std(l)) for l in zip(*results_dic[GAname])]
+                if not len(sweep_results):
+                    logging.critical(f'[{GAname}] thread terminated abnormally')
+                    continue
 
                 for mapping in configs['GAspecs'][GAname]['io']['mappings']:
                     if mapping['from'] == 'fffff':

@@ -1,6 +1,0 @@
-## TODO
-1. optinal args for GA spec specified with '[' and ']'
-2. use regex for argv parsing
-3. support for multiple problems at once
-4. dynamic profiling (jobs scheduled per sec, job avg wait time, job avg exec time, ...etc)
-5. stdout spec parsing
