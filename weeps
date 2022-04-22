@@ -12,6 +12,8 @@ from scheduler import *
 import yaml
 import copy
 import re
+import functools
+import csv
 
 with open('weeps.yaml', 'r') as f:
     configs = yaml.safe_load(f)
@@ -49,7 +51,7 @@ def prefill_cmd(GAname,**kwargs):
         try:
             target = kwargs[token]
             tokens[idx] = str(target)
-            logging.info(f'{GAname} argv substitution : "{token}" -> "{target}"  (kwargs)')
+            logging.info(f'{GAname} argv substitution : "{token}" -> {target}  (kwargs)')
             continue
         except Exception as e:
             logging.debug(f'No match for "{token}" in kwargs')
@@ -62,7 +64,7 @@ def prefill_cmd(GAname,**kwargs):
                 try:
                     target = configs['basics'][mapping['from']]
                     tokens[idx] = str(mapping['map'][target])
-                    logging.info(f'{GAname} argv substitution : "{token}" -> "{target}"  (mappings)')
+                    logging.info(f'{GAname} argv substitution : "{token}" -> "{target}" -> {tokens[idx]}  (mappings)')
                     mapped = True
                     break
                 except Exception as e:
@@ -78,7 +80,7 @@ def prefill_cmd(GAname,**kwargs):
         try:
             target = configs['basics'][token]
             tokens[idx] = str(target)
-            logging.info(f'{GAname} argv substitution : "{token}" -> "{target}"  (basics)')
+            logging.info(f'{GAname} argv substitution : "{token}" -> {target}  (basics)')
             continue
         except Exception as e:
             logging.debug(f'No match for "{token}" in basics')
@@ -87,7 +89,7 @@ def prefill_cmd(GAname,**kwargs):
         try:
             target = GA_spec['io']['fixed_fields'][token]
             tokens[idx] = str(target)
-            logging.info(f'{GAname} argv substitution : "{token}" -> "{target}"  (fixed fields)')
+            logging.info(f'{GAname} argv substitution : "{token}" -> {target}  (fixed fields)')
             continue
         except Exception as e:
             logging.debug(f'No match for "{token}" in fixed fields')
@@ -126,6 +128,52 @@ def finalize_cmd(cmd, pop):
     return cmd.replace('pop',str(pop))
 
 
+def parse_output(GAname, out_str):
+    stdout_regex = configs['GAspecs'][GAname]['io']['stdout']
+    tokens = re.findall('\w+|\[\w+\]|.', stdout_regex)
+
+    out_dict = {}
+
+    for req_tok in ['nfe',]:
+        if req_tok not in tokens:
+            logging.error(f'{req_tok} is non-optional for sweeping, and should be specified in stdout of {GAname}')
+            exit()
+
+    for token in tokens:
+        if re.match('\w+',token):        # a name is given, which should correspond to a number
+            r = re.search('(\+|-)?[0-9]+', out_str)                             # interger
+            if r:
+                value = int(out_str[r.start():r.end()])
+                logging.debug(f'{GAname} stdout parsing : {token} = {str(value)}')
+                out_dict[token] = value
+                out_str = out_str[r.end():]
+                continue
+            
+            r = re.search('[-+]?([0-9]*[.])?[0-9]+([eE][-+]?\d+)?', out_str)    # floating point / scientific notation
+            if r:
+                value = float(out_str[r.start():r.end()])
+                out_dict[token] = value
+                logging.debug(f'{GAname} stdout parsing : {token} = {str(value)}')
+                out_str = out_str[r.end():]
+                continue
+
+            else:
+                logging.debug(f'{GAname} stdout parsing : "{token}" not matched with any value')
+                return None
+
+        else:                            # seperator (e.g. spaces, newlines, ...etc)
+            idx = out_str.find(token)
+            
+            if idx == -1:
+                logging.debug(f'{GAname} stdout parsing : seperator "{token}" not matched')
+                return None
+
+            logging.debug(f'{GAname} stdout parsing : "{token}" consumed')
+            out_str = out_str[idx+1:]
+
+    return out_dict
+
+
 def weep(fffff, ell, inst_num, sch, GAname):
     assert type(sch) is Scheduler, 'weep procedure is not assigned a proper scheduler'
 
@@ -152,35 +200,37 @@ def weep(fffff, ell, inst_num, sch, GAname):
         nonlocal best_nfe
         nonlocal best_pop
 
-        results = []
+        #results = []
+        out_dicts = []
         for _ in range(REPEAT):
             cmd = finalize_cmd(raw_cmd,pop)
             jid = sch.queue(inst_num, cmd, cwd, env)
-            out = sch.join(jid, format_DSMGA2_output)
+            out_dict = sch.join(jid, functools.partial(parse_output, GAname))
 
             # FIXME: failed GA run should be included into results as well
-            if out[3]: # fail
+            if not out_dict: # fail
                 break
             else:
-                results.append(out)
-
-        if len(results):
-            data[pop] = [np.mean(l) for l in list(zip(*results))]
+                out_dicts.append(out_dict)
         
+        if len(out_dicts):
+            data[pop] = {key: np.mean([out_dict[key] for out_dict in out_dicts]) for key in out_dicts[0].keys()}
+            data[pop]['successes'] = len(out_dicts)
+
         # CRITICAL : possible race condition
         wLock.acquire()
-        if len(results) == 10 and data[pop][1] < best_nfe:
-            best_nfe = data[pop][1]
+        if len(out_dicts) == 10 and data[pop]['nfe'] < best_nfe:
+            best_nfe = data[pop]['nfe']
             best_pop = pop
         wLock.release()
 
 
-        if len(results) < 10:
-            logging.warning(f'{GAname} inst={inst_num} pop={pop} failed on attempt {len(results)}')
+        if len(out_dicts) < 10:
+            logging.info(f'{GAname} inst={inst_num} pop={pop} failed on attempt {len(out_dicts)}')
         else:
             logging.info(f'{GAname} inst={inst_num} pop={pop} successful')
 
-        return len(results) == 10
+        return len(out_dicts) == 10
 
     
     ### phase 1 : stop after STOP_AFTER consecutive nfe increase or the current nfe reaches 2x the best nfe
@@ -195,11 +245,11 @@ def weep(fffff, ell, inst_num, sch, GAname):
             solved = solved or s
        
             ''' break condition 1 : consider solves only '''
-            if s and data[current_pop][1] > 2 * best_nfe:
+            if s and data[current_pop]['nfe'] > 2 * best_nfe:
                 break
 
             ''' break condition 1 : consider all '''
-            #if data[current_pop][1] > 2 * best_nfe:
+            #if data[current_pop]['nfe'] > 2 * best_nfe:
             #    break
 
             ''' check moving average '''
@@ -242,12 +292,17 @@ def weep(fffff, ell, inst_num, sch, GAname):
 
     # FIXME : ./DSMGA2 does not currently record revive count, which should also be monitored be dumped into txt
     if inst_num is not None:
-        with open(os.path.join(ROOT_DIR,GAname,f'{problem_id}_{ell}_{inst_num}.txt'),'w') as f:
-            for pop in sorted(data.keys()):
-                gen,nfe,lsnfe,failnum = data[pop] # failnum is always 0
-                f.write(f'{pop}\t{gen}\t{nfe}\t{lsnfe}\t{failnum}\n')
+        with open(os.path.join(ROOT_DIR,GAname,f'{problem_id}_{ell}_{inst_num}.csv'),'w') as f:
+            column_names = ['pop'] + list(data[best_pop].keys())
 
-    return best_pop, data[best_pop][0], data[best_pop][1]
+            writer = csv.writer(f, delimiter='\t')
+            writer.writerow(column_names)
+
+            for pop in sorted(data.keys()):
+                writer.writerow([pop] + [data[pop][key] for key in data[pop].keys()])
+
+
+    return best_pop, data
 
 
 def weeps():
@@ -318,20 +373,34 @@ def weeps():
 
             if not threads_remain: # sweep for a GA is done
                 threads_dic.pop(GAname)
-                sweep_results = [(np.mean(l),np.std(l)) for l in zip(*results_dic[GAname])]
-                if not len(sweep_results):
+                
+                if not len(results_dic[GAname]):
                     logging.critical(f'[{GAname}] thread terminated abnormally')
                     continue
+
+                keys = [key for key in results_dic[GAname][0][1][results_dic[GAname][0][0]]]
+                sweep_results = {
+                        key: [dic[bestpop][key] for bestpop,dic in results_dic[GAname]] for key in keys
+                        }
+                for key in sweep_results.keys():    
+                    sweep_results[key] = (np.mean(sweep_results[key]),np.std(sweep_results[key]))
+
 
                 for mapping in configs['GAspecs'][GAname]['io']['mappings']:
                     if mapping['from'] == 'fffff':
                         dict_fffff_to_problemid = mapping['map']
                 problem_id = dict_fffff_to_problemid[fffff]
 
-                with open(os.path.join(ROOT_DIR,GAname,f'{problem_id}_{ell}.txt'),'w') as f:
-                    f.write(f'{sweep_results[0][0]}\t{sweep_results[1][0]}\t{sweep_results[2][0]}\t{sweep_results[2][1]}')
+                with open(os.path.join(ROOT_DIR,GAname,f'{problem_id}_{ell}.csv'),'w') as f:
+                    column_names = list(sweep_results.keys())
 
-                print(f'[{GAname}] Summary --- Pop: {sweep_results[0][0]}, Gen: {sweep_results[1][0]}, NFE: {sweep_results[2]}')
+                    writer = csv.writer(f, delimiter='\t')
+                    writer.writerow(column_names)
+                    writer.writerow([sweep_results[key][0] for key in sweep_results.keys()])  # mean
+                    writer.writerow([sweep_results[key][1] for key in sweep_results.keys()])  # std
+
+                nfe_tup = sweep_results['nfe']
+                print(f'[{GAname}] Summary --- NFE: {nfe_tup}')
 
         if global_threads_remain:
             sch.schedule()

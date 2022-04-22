@@ -33,7 +33,7 @@ def K_incr_in_mv_avg(data,K): # check if there are K consecutive increases in mo
     if len(data.keys()) >= K + 1:
         nfe_list = []
         for pop in sorted(data.keys()):
-            nfe_list.append(data[pop][1])
+            nfe_list.append(data[pop]['nfe'])
 
         smoothed_nfe_list = get_moving_avg(nfe_list,K)
         for i in range(len(smoothed_nfe_list)-1):
