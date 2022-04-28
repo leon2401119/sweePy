@@ -54,7 +54,9 @@ def weep(fffff, ell, inst_num, sch, GAname):
 
         #results = []
         out_dicts = []
-        for _ in range(configs['tunnables']['repeat']):
+        reps = configs['tunnables']['repeat']
+
+        for _ in range(reps):
             cmd = finalize_cmd(raw_cmd,pop)
             jid = sch.queue(inst_num, cmd, cwd, env)
             out_dict = sch.join(jid, functools.partial(parse_output, configs, GAname))
@@ -71,18 +73,18 @@ def weep(fffff, ell, inst_num, sch, GAname):
 
         # CRITICAL : possible race condition
         wLock.acquire()
-        if len(out_dicts) == 10 and data[pop]['nfe'] < best_nfe:
+        if len(out_dicts) == reps and data[pop]['nfe'] < best_nfe:
             best_nfe = data[pop]['nfe']
             best_pop = pop
         wLock.release()
 
 
-        if len(out_dicts) < 10:
+        if len(out_dicts) < reps:
             logging.info(f'{GAname} inst={inst_num} pop={pop} failed on attempt {len(out_dicts)}')
         else:
             logging.info(f'{GAname} inst={inst_num} pop={pop} successful')
 
-        return len(out_dicts) == 10
+        return len(out_dicts) == reps
 
     
     ### phase 1 : stop after STOP_AFTER consecutive nfe increase or the current nfe reaches 2x the best nfe
@@ -160,120 +162,126 @@ def weep(fffff, ell, inst_num, sch, GAname):
 def weeps():
     sch = Scheduler()
 
-    threads_dic = {}
-    results_dic = {}
+    # job_ctxts is a list of job_ctxt, which stores the usual configurations in the 'basics' section
+    job_ctxts = configs['basics'] if type(configs['basics']) is list else [configs['basics']]
 
-    fffff = configs['basics']['fffff']
-    ell = configs['basics']['ell']
+    for job_ctxt in job_ctxts:
+        configs['basics'] = job_ctxt
 
-    for GAname in configs['GAs']:
-        # retrieve metadata for GA
-        try:
-            GAspec = configs['GAspecs'][GAname]
-        except Exception as e:
-            print(f'No corresponding configuration for GA named {GAname} in the yaml GAspecs')
-            exit()
+        threads_dic = {}
+        results_dic = {}
 
-        # validty check
-        bin_path = os.path.join(GAspec['path'], GAspec['bin'])
-        out_path = os.path.join(ROOT_DIR, GAname)
-        os.makedirs(out_path,exist_ok=True) # create folder if non-existant
+        fffff = configs['basics']['fffff']
+        ell = configs['basics']['ell']
 
-        assert os.path.exists(bin_path), f'Binary cannot be located at the provided path "{bin_path}"'
-        
-        if fffff not in configs['Fspecs'].keys():
-            print(f'No corresponding configuration for problem named {fffff} in the yaml Fspecs')
-            exit()
-        
-        if 'feasible_ell' in configs['Fspecs'][fffff].keys():
-            ell_feasibility_check_func = eval(configs['Fspecs'][fffff]['feasible_ell'])
-            if not ell_feasibility_check_func(ell):
-                print(f'Infeasible ell for {fffff}')
+        for GAname in configs['GAs']:
+            # retrieve metadata for GA
+            try:
+                GAspec = configs['GAspecs'][GAname]
+            except Exception as e:
+                print(f'No corresponding configuration for GA named {GAname} in the yaml GAspecs')
                 exit()
-        else:
-            logging.warning(f'No ell feasibility checking provided for {fffff}, skipping...')
 
-        if 'instances' in configs['Fspecs'][fffff].keys():
-            taskiter = eval(configs['Fspecs'][fffff]['instances'])
-            hasInstance = True
-        else:
-            taskiter = range(10)
-            hasInstance = False
-       
-        # schedule all tasks with multithreading
-        threads_dic[GAname] = []
-        results_dic[GAname] = []
+            # validty check
+            bin_path = os.path.join(GAspec['path'], GAspec['bin'])
+            out_path = os.path.join(ROOT_DIR, GAname)
+            os.makedirs(out_path,exist_ok=True) # create folder if non-existant
+
+            assert os.path.exists(bin_path), f'Binary cannot be located at the provided path "{bin_path}"'
         
-        for i in taskiter:
-            # each thread calls weep(fffff,ell,...) and append the result to results_dic[GAname]
-            # and the thread itself will be put into threads_dic[GAname] for thread management
-            thread = threading.Thread(
-                    target = lambda l,tup : l.append(weep(*tup)), 
-                    args = (results_dic[GAname], (fffff,ell,i if hasInstance else -1*i-1, sch, GAname))
-                    )
-            thread.start()
-            threads_dic[GAname].append(thread)
+            if fffff not in configs['Fspecs'].keys():
+                print(f'No corresponding configuration for problem named {fffff} in the yaml Fspecs')
+                exit()
+        
+            if 'feasible_ell' in configs['Fspecs'][fffff].keys():
+                ell_feasibility_check_func = eval(configs['Fspecs'][fffff]['feasible_ell'])
+                if not ell_feasibility_check_func(ell):
+                    print(f'Infeasible ell for {fffff}')
+                    exit()
+            else:
+                logging.warning(f'No ell feasibility checking provided for {fffff}, skipping...')
 
-        print(f'[{GAname}] Starting {fffff} ({ell})')
+            if 'instances' in configs['Fspecs'][fffff].keys():
+                taskiter = eval(configs['Fspecs'][fffff]['instances'])
+                hasInstance = True
+            else:
+                taskiter = range(10)
+                hasInstance = False
+       
+            # schedule all tasks with multithreading
+            threads_dic[GAname] = []
+            results_dic[GAname] = []
+        
+            for i in taskiter:
+                # each thread calls weep(fffff,ell,...) and append the result to results_dic[GAname]
+                # and the thread itself will be put into threads_dic[GAname] for thread management
+                thread = threading.Thread(
+                        target = lambda l,tup : l.append(weep(*tup)), 
+                        args = (results_dic[GAname], (fffff,ell,i if hasInstance else -1*i-1, sch, GAname))
+                        )
+                thread.start()
+                threads_dic[GAname].append(thread)
+
+            print(f'[{GAname}] Starting {fffff} ({ell})')
 
 
-    # the main scheduler loop which
-    #   1. check status of all scheduled threads
-    #   2. collect results from finished threads
-    #   3. invoke scheduler if unfinished threads remain
+        # the main scheduler loop which
+        #   1. check status of all scheduled threads
+        #   2. collect results from finished threads
+        #   3. invoke scheduler if unfinished threads remain
 
-    while len(threads_dic.keys()):
-        global_threads_remain = False
-        for GAname in list(threads_dic.keys())[:]: # check each GA one-by-one
-            threads_remain = False
-            for thread in threads_dic[GAname][:]:
-                if not thread.is_alive():
-                    thread.join()
-                    threads_dic[GAname].remove(thread)
-                else:
-                    threads_remain = True
-                    global_threads_remain = True
+        while len(threads_dic.keys()):
+            global_threads_remain = False
+            for GAname in list(threads_dic.keys())[:]: # check each GA one-by-one
+                threads_remain = False
+                for thread in threads_dic[GAname][:]:
+                    if not thread.is_alive():
+                        thread.join()
+                        threads_dic[GAname].remove(thread)
+                    else:
+                        threads_remain = True
+                        global_threads_remain = True
 
-            if not threads_remain: # sweep for a GA is done
-                threads_dic.pop(GAname)
+                if not threads_remain: # sweep for a GA is done
+                    threads_dic.pop(GAname)
                 
-                if not len(results_dic[GAname]):
-                    logging.critical(f'[{GAname}] thread terminated abnormally')
-                    continue
+                    if not len(results_dic[GAname]):
+                        logging.critical(f'[{GAname}] thread terminated abnormally')
+                        continue
 
-                # results_dic[GAname] is a list of dictionaries, each representing the sweep result from an instance
-                # aggregating all instances, we calculate mean/std for each key specified by GA's stdout
-                keys = [key for key in results_dic[GAname][0][1][results_dic[GAname][0][0]]]
-                sweep_results = {
-                        key: [dic[bestpop][key] for bestpop,dic in results_dic[GAname]] for key in keys
-                        }
-                for key in sweep_results.keys():    
-                    sweep_results[key] = (np.mean(sweep_results[key]),np.std(sweep_results[key]))
+                    # results_dic[GAname] is a list of dictionaries, each representing the sweep result from an instance
+                    # aggregating all instances, we calculate mean/std for each key specified by GA's stdout
+                    keys = [key for key in results_dic[GAname][0][1][results_dic[GAname][0][0]]]
+                    sweep_results = {
+                            key: [dic[bestpop][key] for bestpop,dic in results_dic[GAname]] for key in keys
+                            }
+                    for key in sweep_results.keys():    
+                        sweep_results[key] = (np.mean(sweep_results[key]),np.std(sweep_results[key]))
 
 
-                for mapping in configs['GAspecs'][GAname]['io']['mappings']:
-                    if mapping['from'] == 'fffff':
-                        dict_fffff_to_problemid = mapping['map']
-                problem_id = dict_fffff_to_problemid[fffff]
+                    for mapping in configs['GAspecs'][GAname]['io']['mappings']:
+                        if mapping['from'] == 'fffff':
+                            dict_fffff_to_problemid = mapping['map']
+                    problem_id = dict_fffff_to_problemid[fffff]
 
-                # write the mean/std into csv file
-                with open(os.path.join(ROOT_DIR,GAname,f'{problem_id}_{ell}.csv'),'w') as f:
-                    column_names = list(sweep_results.keys())
+                    # write the mean/std into csv file
+                    with open(os.path.join(ROOT_DIR,GAname,f'{problem_id}_{ell}.csv'),'w') as f:
+                        column_names = list(sweep_results.keys())
 
-                    writer = csv.writer(f, delimiter='\t')
-                    writer.writerow(column_names)
-                    writer.writerow([sweep_results[key][0] for key in sweep_results.keys()])  # mean
-                    writer.writerow([sweep_results[key][1] for key in sweep_results.keys()])  # std
+                        writer = csv.writer(f, delimiter='\t')
+                        writer.writerow(column_names)
+                        writer.writerow([sweep_results[key][0] for key in sweep_results.keys()])  # mean
+                        writer.writerow([sweep_results[key][1] for key in sweep_results.keys()])  # std
 
-                nfe_tup = sweep_results['nfe']
-                print(f'[{GAname}] Summary --- NFE: {nfe_tup}')
+                    nfe_tup = sweep_results['nfe']
+                    print(f'[{GAname}] Summary --- NFE: {nfe_tup}')
 
-        # unfinished sweep remain
-        if global_threads_remain:
-            sch.schedule()
-            #time.sleep(configs['tunnables']['sleep_time']) # sleep for some time
-        else:
-            break
+            # unfinished sweep remain
+            if global_threads_remain:
+                sch.schedule()
+                #time.sleep(configs['tunnables']['sleep_time']) # sleep for some time
+            else:
+                break
 
 
 if __name__ == '__main__':

@@ -1,16 +1,18 @@
-basics:
-    # problem to test, full options are listed in the 'Fspecs' section below
-    fffff: mktrap
-    # length of problem
-    ell: 400
-    # maximum generation for GA
-    maxgen: 200
-    # maximum nfe for GA
-    maxnfe: -1
-    # instance number for instance based problem, blank for full test
+basics: # supports single job and multiple jobs (specified by list of jobs)
+
+    #########################################################################################
+    #  fffff      : problem to test, full options are listed in the 'Fspecs' section below  #
+    #  ell        : length of the tested problem                                            #
+    #  instance   : instance number for instance based problem, blank for full test         #
+    #########################################################################################
+
+  - fffff: mktrap
+    ell: 40
     instance: 
-    # shift amount for nk, 1 if unspecified
-    shift:
+
+  - fffff: cyctrap
+    ell: 40
+    instance: 
 
 GAs:
   - Original
@@ -29,7 +31,7 @@ tunnables:
 
 miscs:
     # filter for logging (1=debug,2=info,3=warning,4=error,5=critical)
-    log_level: 2
+    log_level: 3
 
 
 
@@ -52,9 +54,11 @@ GAspecs:
       argv: 'ell pop problem_id maxgen maxnfe repeat display rand_seed'
       stdout: "\ngen  nfe  lsnfe failnum"
       fixed_fields:
-        repeat    :  1
-        display   :  0
-        rand_seed : -1
+        maxgen    : 200
+        maxnfe    :  -1
+        repeat    :   1
+        display   :   0
+        rand_seed :  -1
       mappings:
       - from: fffff
         to: problem_id
