@@ -12,6 +12,7 @@ import logging
 import yaml
 import functools
 import csv
+import json
 
 with open('weeps.yaml', 'r') as f:
     configs = yaml.safe_load(f)
@@ -156,11 +157,17 @@ def weep(fffff, ell, inst_num, sch, GAname):
                 writer.writerow([pop] + [data[pop][key] for key in data[pop].keys()])
 
 
-    return best_pop, data
+    return best_pop, data, inst_num
 
 
 def weeps():
-    sch = Scheduler()
+    try:
+        sch = Scheduler(int(configs['miscs']['workers']))
+    except Exception as e:
+        logging.info('Number of workers unsepcified, using default. (core_count - 1)')
+        sch = Scheduler()
+
+    print(f'Utilizing {sch.num_workers} cores.')
 
     # job_ctxts is a list of job_ctxt, which stores the usual configurations in the 'basics' section
     job_ctxts = configs['basics'] if type(configs['basics']) is list else [configs['basics']]
@@ -193,21 +200,23 @@ def weeps():
                 print(f'No corresponding configuration for problem named {fffff} in the yaml Fspecs')
                 exit()
         
-            if 'feasible_ell' in configs['Fspecs'][fffff].keys():
+            ell_feasibility_check_func = None
+            try:
                 ell_feasibility_check_func = eval(configs['Fspecs'][fffff]['feasible_ell'])
-                if not ell_feasibility_check_func(ell):
-                    print(f'Infeasible ell for {fffff}')
-                    exit()
-            else:
-                logging.warning(f'No ell feasibility checking provided for {fffff}, skipping...')
+            except Exception as e:
+                logging.warning(f'No valid ell feasibility check registered for {fffff}, skipping...')
 
-            if 'instances' in configs['Fspecs'][fffff].keys():
+            if ell_feasibility_check_func:
+                assert ell_feasibility_check_func(ell), f'Infeasible ell for {fffff}'
+
+            hasInstance = False
+            taskiter = range(10)
+            try:
                 taskiter = eval(configs['Fspecs'][fffff]['instances'])
                 hasInstance = True
-            else:
-                taskiter = range(10)
-                hasInstance = False
-       
+            except Exception as e:
+                logging.warning(f'No instance generator provided for {fffff}, using default. (range(10))')
+
             # schedule all tasks with multithreading
             threads_dic[GAname] = []
             results_dic[GAname] = []
@@ -251,27 +260,44 @@ def weeps():
 
                     # results_dic[GAname] is a list of dictionaries, each representing the sweep result from an instance
                     # aggregating all instances, we calculate mean/std for each key specified by GA's stdout
-                    keys = [key for key in results_dic[GAname][0][1][results_dic[GAname][0][0]]]
-                    sweep_results = {
-                            key: [dic[bestpop][key] for bestpop,dic in results_dic[GAname]] for key in keys
-                            }
-                    for key in sweep_results.keys():    
-                        sweep_results[key] = (np.mean(sweep_results[key]),np.std(sweep_results[key]))
+                    
+                    # sort with instance number first (in order issue, out of order execution and in order commit :D)
+                    results_dic[GAname].sort(key= lambda e: e[2])
 
+                    keys = [key for key in results_dic[GAname][0][1][results_dic[GAname][0][0]]]
+                    sweep_results_raw = {
+                            key: [dic[bestpop][key] for bestpop,dic,_ in results_dic[GAname]] for key in keys
+                            }
+
+                    sweep_results = {}
+                    for key in sweep_results_raw.keys():    
+                        sweep_results[key] = (np.mean(sweep_results_raw[key]),np.std(sweep_results_raw[key]))
 
                     for mapping in configs['GAspecs'][GAname]['io']['mappings']:
                         if mapping['from'] == 'fffff':
                             dict_fffff_to_problemid = mapping['map']
                     problem_id = dict_fffff_to_problemid[fffff]
 
+                    # write data into csv
+                    with open(os.path.join(ROOT_DIR,GAname,f'{problem_id}_{ell}.csv'), 'w') as f:
+                        column_names = ['inst'] + list(sweep_results.keys())
+                        writer = csv.writer(f, delimiter='\t')
+                        writer.writerow(column_names)
+                        for idx in range(len(results_dic[GAname])):
+                            writer.writerow([results_dic[GAname][idx][2]] + [sweep_results_raw[key][idx] for key in keys])
+
+                        writer.writerow(['mean'] + [sweep_results[key][0] for key in sweep_results.keys()])  # mean
+                        writer.writerow(['std'] + [sweep_results[key][1] for key in sweep_results.keys()])  # std
+                        
+                    '''
                     # write the mean/std into csv file
                     with open(os.path.join(ROOT_DIR,GAname,f'{problem_id}_{ell}.csv'),'w') as f:
                         column_names = list(sweep_results.keys())
-
                         writer = csv.writer(f, delimiter='\t')
                         writer.writerow(column_names)
                         writer.writerow([sweep_results[key][0] for key in sweep_results.keys()])  # mean
                         writer.writerow([sweep_results[key][1] for key in sweep_results.keys()])  # std
+                    '''
 
                     nfe_tup = sweep_results['nfe']
                     print(f'[{GAname}] Summary --- NFE: {nfe_tup}')

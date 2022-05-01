@@ -26,13 +26,12 @@ tunnables:
     repeat: 10
     # number of consecutive increases for termination of phase 1 sweeping
     stop_after: 3
-    # time to wait after an unsuccessful polling
-    sleep_time: 1
 
 miscs:
     # filter for logging (1=debug,2=info,3=warning,4=error,5=critical)
     log_level: 3
-
+    # number of workers spawned (blank for default, which is num_cores-1)
+    workers: 
 
 
 

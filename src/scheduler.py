@@ -6,6 +6,8 @@ from multiprocessing import cpu_count
 
 class Scheduler:
     def __init__(self,num_workers=cpu_count()-1):
+        assert num_workers > 0, 'Scheduler should be provided at least 1 core'
+
         self.used_jids = []
         self.jobs = {}            # dictionary of Popen Object for issued jobs, (cmd,inst_num) for queud jobs
         self.events = {}
