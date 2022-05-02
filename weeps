@@ -147,7 +147,7 @@ def weep(fffff, ell, inst_num, sch, GAname):
 
     # FIXME : ./DSMGA2 does not currently record revive count, which should also be monitored be dumped into txt
     if inst_num is not None:
-        with open(os.path.join(ROOT_DIR,GAname,f'{problem_id}_{ell}_{inst_num}.csv'),'w') as f:
+        with open(os.path.join(ROOT_DIR,GAname,f'{fffff}_{ell}',f'{inst_num}.csv'),'w') as f:
             column_names = ['pop'] + list(data[best_pop].keys())
 
             writer = csv.writer(f, delimiter='\t')
@@ -191,7 +191,7 @@ def weeps():
 
             # validty check
             bin_path = os.path.join(GAspec['path'], GAspec['bin'])
-            out_path = os.path.join(ROOT_DIR, GAname)
+            out_path = os.path.join(ROOT_DIR, GAname, f'{fffff}_{ell}')
             os.makedirs(out_path,exist_ok=True) # create folder if non-existant
 
             assert os.path.exists(bin_path), f'Binary cannot be located at the provided path "{bin_path}"'
@@ -279,7 +279,7 @@ def weeps():
                     problem_id = dict_fffff_to_problemid[fffff]
 
                     # write data into csv
-                    with open(os.path.join(ROOT_DIR,GAname,f'{problem_id}_{ell}.csv'), 'w') as f:
+                    with open(os.path.join(ROOT_DIR,GAname,f'{fffff}_{ell}',f'report.csv'), 'w') as f:
                         stdout_fields = list(sweep_results.keys())
                         column_names = ['inst','pop'] + stdout_fields
                         writer = csv.writer(f, delimiter='\t')
