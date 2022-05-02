@@ -280,25 +280,16 @@ def weeps():
 
                     # write data into csv
                     with open(os.path.join(ROOT_DIR,GAname,f'{problem_id}_{ell}.csv'), 'w') as f:
-                        column_names = ['inst'] + list(sweep_results.keys())
+                        stdout_fields = list(sweep_results.keys())
+                        column_names = ['inst','pop'] + stdout_fields
                         writer = csv.writer(f, delimiter='\t')
                         writer.writerow(column_names)
                         for idx in range(len(results_dic[GAname])):
-                            writer.writerow([results_dic[GAname][idx][2]] + [sweep_results_raw[key][idx] for key in keys])
+                            writer.writerow([results_dic[GAname][idx][2], results_dic[GAname][idx][0]] + [sweep_results_raw[key][idx] for key in keys])
 
-                        writer.writerow(['mean'] + [sweep_results[key][0] for key in sweep_results.keys()])  # mean
-                        writer.writerow(['std'] + [sweep_results[key][1] for key in sweep_results.keys()])  # std
+                        writer.writerow(['mean', np.mean([bestpop for bestpop,_,_ in results_dic[GAname]])] + [sweep_results[key][0] for key in stdout_fields])  # mean
+                        writer.writerow(['std', np.std([bestpop for bestpop,_,_ in results_dic[GAname]])] + [sweep_results[key][1] for key in stdout_fields])  # std
                         
-                    '''
-                    # write the mean/std into csv file
-                    with open(os.path.join(ROOT_DIR,GAname,f'{problem_id}_{ell}.csv'),'w') as f:
-                        column_names = list(sweep_results.keys())
-                        writer = csv.writer(f, delimiter='\t')
-                        writer.writerow(column_names)
-                        writer.writerow([sweep_results[key][0] for key in sweep_results.keys()])  # mean
-                        writer.writerow([sweep_results[key][1] for key in sweep_results.keys()])  # std
-                    '''
-
                     nfe_tup = sweep_results['nfe']
                     print(f'[{GAname}] Summary --- NFE: {nfe_tup}')
 
